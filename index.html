@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TimeClock</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 16px; }
+    .row { display:flex; gap:12px; }
+    button { padding: 12px 14px; font-size: 16px; border-radius: 12px; border: 1px solid #ccc; background:#fff; }
+    button.primary { background: #0a84ff; color:#fff; border-color:#0a84ff; }
+    .card { padding: 12px; border: 1px solid #e5e5e5; border-radius: 16px; margin-top: 12px; }
+    .muted { color: #666; }
+    .small { font-size: 13px; }
+    .entry { padding: 10px 0; border-bottom: 1px solid #eee; }
+    .entry:last-child { border-bottom:none; }
+    .right { margin-left:auto; }
+    .pill { padding: 4px 8px; border-radius: 999px; border: 1px solid #ddd; font-size: 12px; }
+    input[type="date"], input[type="datetime-local"] { padding: 10px; border-radius: 12px; border: 1px solid #ccc; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <h2 style="margin: 0 0 10px;">TimeClock</h2>
+
+  <div class="row">
+    <button class="primary" id="clockInBtn">Clock In</button>
+    <button id="clockOutBtn">Clock Out</button>
+    <button id="exportBtn">Export CSV</button>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; align-items:center; gap:12px;">
+      <b>Range Total</b>
+      <span class="right pill" id="rangeTotal">0h 0m</span>
+    </div>
+    <div class="row" style="margin-top:10px; flex-wrap:wrap;">
+      <label class="small">Start<br><input type="date" id="startDate"></label>
+      <label class="small">End<br><input type="date" id="endDate"></label>
+      <button id="calcRangeBtn">Calculate</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; align-items:center;">
+      <b>Daily Records</b>
+      <span class="right muted small" id="countLabel"></span>
+    </div>
+    <div id="list"></div>
+  </div>
+
+<script>
+  // Storage model:
+  // entries = { "YYYY-MM-DD": { clockIn: "YYYY-MM-DD HH:MM", clockOut: "..."} }
+
+  const STORAGE_KEY = "timeclock_entries_v1";
+
+  function pad2(n){ return String(n).padStart(2, "0"); }
+
+  function dateKey(d){
+    return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  }
+
+  function formatTimestamp(d){
+    return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+
+  function parseTimestamp(s){
+    // "YYYY-MM-DD HH:MM"
+    const [ymd, hm] = s.split(" ");
+    const [y,m,d] = ymd.split("-").map(Number);
+    const [hh,mm] = hm.split(":").map(Number);
+    return new Date(y, m-1, d, hh, mm, 0, 0);
+  }
+
+  function durationStr(ms){
+    const totalMin = Math.floor(ms / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h}h ${m}m`;
+  }
+
+  function load(){
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+    catch { return {}; }
+  }
+
+  function save(entries){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  }
+
+  function upsert(type){
+    const entries = load();
+    const now = new Date();
+    const key = dateKey(now);
+    entries[key] = entries[key] || {};
+    entries[key][type] = formatTimestamp(now);
+    save(entries);
+    render();
+  }
+
+  function computeWorkMs(e){
+    if(!e.clockIn || !e.clockOut) return null;
+    const a = parseTimestamp(e.clockIn);
+    const b = parseTimestamp(e.clockOut);
+    const ms = b - a;
+    return ms >= 0 ? ms : null;
+  }
+
+  function getSortedKeysPinnedToday(entries){
+    const keys = Object.keys(entries);
+    const today = dateKey(new Date());
+    keys.sort((a,b) => b.localeCompare(a)); // newest first
+    // Pin today:
+    if(keys.includes(today)){
+      return [today, ...keys.filter(k => k !== today)];
+    }
+    return keys;
+  }
+
+  function render(){
+    const entries = load();
+    const keys = getSortedKeysPinnedToday(entries);
+    document.getElementById("countLabel").textContent = keys.length ? `${keys.length} day(s)` : "";
+
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+
+    if(keys.length === 0){
+      list.innerHTML = `<div class="muted" style="margin-top:10px;">No entries yet.</div>`;
+      return;
+    }
+
+    for(const k of keys){
+      const e = entries[k] || {};
+      const workMs = computeWorkMs(e);
+      const workLabel = workMs != null ? durationStr(workMs) : "—";
+
+      const div = document.createElement("div");
+      div.className = "entry";
+      div.innerHTML = `
+        <div style="display:flex; align-items:center; gap:10px;">
+          <b>${k}</b>
+          <span class="right small"><b>Work:</b> ${workLabel}</span>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+          <span style="width:44px;">In:</span>
+          <span class="${e.clockIn ? "" : "muted"}">${e.clockIn || "—"}</span>
+          <button class="right small" data-edit="clockIn" data-date="${k}">Edit</button>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+          <span style="width:44px;">Out:</span>
+          <span class="${e.clockOut ? "" : "muted"}">${e.clockOut || "—"}</span>
+          <button class="right small" data-edit="clockOut" data-date="${k}">Edit</button>
+        </div>
+      `;
+      list.appendChild(div);
+    }
+
+    list.querySelectorAll("button[data-edit]").forEach(btn => {
+      btn.addEventListener("click", () => openEdit(btn.dataset.date, btn.dataset.edit));
+    });
+  }
+
+  function openEdit(dateKeyStr, field){
+    const entries = load();
+    const e = entries[dateKeyStr] || {};
+    const current = e[field];
+
+    // Build a datetime-local value: "YYYY-MM-DDTHH:MM"
+    const initial = current
+      ? current.replace(" ", "T")
+      : `${dateKeyStr}T09:00`;
+
+    const val = prompt(`Edit ${field === "clockIn" ? "Clock In" : "Clock Out"}\nFormat: YYYY-MM-DDTHH:MM\n\nExample: 2026-02-08T09:00\n\nLeave blank to clear:`, initial);
+
+    if(val === null) return; // cancel
+
+    entries[dateKeyStr] = entries[dateKeyStr] || {};
+
+    if(val.trim() === ""){
+      delete entries[dateKeyStr][field];
+    } else {
+      // Convert "YYYY-MM-DDTHH:MM" to "YYYY-MM-DD HH:MM"
+      entries[dateKeyStr][field] = val.trim().replace("T", " ");
+    }
+    save(entries);
+    render();
+  }
+
+  function calcRange(){
+    const entries = load();
+    const s = document.getElementById("startDate").value;
+    const e = document.getElementById("endDate").value;
+    if(!s || !e) return;
+
+    const start = s <= e ? s : e;
+    const end = s <= e ? e : s;
+
+    let totalMs = 0;
+    for(const [k, v] of Object.entries(entries)){
+      if(k >= start && k <= end){
+        const ms = computeWorkMs(v);
+        if(ms != null) totalMs += ms;
+      }
+    }
+    document.getElementById("rangeTotal").textContent = durationStr(totalMs);
+  }
+
+  function exportCSV(){
+    const entries = load();
+    const keys = Object.keys(entries).sort((a,b)=>a.localeCompare(b)); // ascending
+
+    let csv = "Date,Clock In,Clock Out,Work Time\n";
+    for(const k of keys){
+      const e = entries[k] || {};
+      const ci = e.clockIn || "";
+      const co = e.clockOut || "";
+      const ms = computeWorkMs(e);
+      const wt = ms != null ? durationStr(ms) : "";
+      csv += `${k},${ci},${co},${wt}\n`;
+    }
+
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `TimeClock-${dateKey(new Date())}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // Init date pickers
+  (function init(){
+    const today = new Date();
+    const end = dateKey(today);
+    const start = dateKey(new Date(today.getFullYear(), today.getMonth(), today.getDate()-7));
+
+    document.getElementById("startDate").value = start;
+    document.getElementById("endDate").value = end;
+
+    document.getElementById("clockInBtn").addEventListener("click", ()=>upsert("clockIn"));
+    document.getElementById("clockOutBtn").addEventListener("click", ()=>upsert("clockOut"));
+    document.getElementById("exportBtn").addEventListener("click", exportCSV);
+    document.getElementById("calcRangeBtn").addEventListener("click", calcRange);
+
+    render();
+    calcRange();
+  })();
+</script>
+</body>
+</html>
